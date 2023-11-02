@@ -154,9 +154,7 @@ int bitXor(int x, int y) {
  *   Rating: 1
  */
 int tmin(void) {
-
-  return 2;
-
+  return 1 << 31;
 }
 //2
 /*
@@ -167,7 +165,7 @@ int tmin(void) {
  *   Rating: 1
  */
 int isTmax(int x) {
-  return 2;
+  return !(~(x + 1) ^ x) & !!((x + 1) ^ 0x0);
 }
 /* 
  * allOddBits - return 1 if all odd-numbered bits in word set to 1
@@ -178,7 +176,10 @@ int isTmax(int x) {
  *   Rating: 2
  */
 int allOddBits(int x) {
-  return 2;
+  int mask = 0xAA + (0xAA << 8);
+  mask = mask + (mask << 16);
+  // 用掩码mask取出x的奇数位，然后逐位异或，进而判断是否相等
+  return !((mask & x) ^ mask);
 }
 /* 
  * negate - return -x 
@@ -188,7 +189,7 @@ int allOddBits(int x) {
  *   Rating: 2
  */
 int negate(int x) {
-  return 2;
+  return ~x + 1;
 }
 //3
 /* 
@@ -201,7 +202,9 @@ int negate(int x) {
  *   Rating: 3
  */
 int isAsciiDigit(int x) {
-  return 2;
+  // (x - 0x30 >= 0) && (0x39 - x) >=0
+  // 无需考虑overflow问题，因为int四字节足够大，不可能回绕到0x30~0x39
+  return !((x + ~0x30 + 1) >> 31 & 1) & !((0x39 + ~x + 1) >> 31 & 1);
 }
 /* 
  * conditional - same as x ? y : z 
@@ -211,7 +214,9 @@ int isAsciiDigit(int x) {
  *   Rating: 3
  */
 int conditional(int x, int y, int z) {
-  return 2;
+  x = !!x;  // 获取x的布尔值
+  x = ~x + 1;  // x=0时，取反后为全0；x=1时，取反后为全1
+  return (x & y) | (~x & z);
 }
 /* 
  * isLessOrEqual - if x <= y  then return 1, else return 0 
@@ -221,7 +226,17 @@ int conditional(int x, int y, int z) {
  *   Rating: 3
  */
 int isLessOrEqual(int x, int y) {
-  return 2;
+  // 取符号
+  int sx = (x >> 31) & 1;
+  int sy = (y >> 31) & 1;
+  // 情况一：x为负，y为正
+  int cond_1 = sx & ~sy;
+  // 情况二：符号相同，y-x>=0
+  int cond_2 = !(sx ^ sy) & !(((y + ~x + 1) >> 31 & 1));
+  return cond_1 | cond_2;
+  
+  // 下面的做法没有考虑整数的边界回绕的问题(overflow)
+  // return !((y + ~x + 1) >> 31 & 1);
 }
 //4
 /* 
@@ -233,7 +248,10 @@ int isLessOrEqual(int x, int y) {
  *   Rating: 4 
  */
 int logicalNeg(int x) {
-  return 2;
+  int sign = x >> 31 & 1;
+  int opp_sign = (~x + 1) >> 31 & 1;
+  int is_zero = (sign | opp_sign) ^ 1;
+  return is_zero;
 }
 /* howManyBits - return the minimum number of bits required to represent x in
  *             two's complement
@@ -248,7 +266,23 @@ int logicalNeg(int x) {
  *  Rating: 4
  */
 int howManyBits(int x) {
-  return 0;
+  int b16, b8, b4, b2, b1, b0;
+  
+  int sign = x >> 31;
+  x = (~sign & x) | (sign & ~x);
+
+  b16 = !!(x >> 16) << 4;
+  x = x >> b16;
+  b8 = !!(x >> 8) << 3;
+  x = x >> b8;
+  b4 = !!(x >> 4) << 2;
+  x = x >> b4;
+  b2 = !!(x >> 2) << 1;
+  x = x >> b2;
+  b1 = !!(x >> 1);
+  x = x >> b1;
+  b0 = x;
+  return 1 + b0 + b1 + b2 + b4 + b8 + b16;
 }
 //float
 /* 
@@ -263,7 +297,25 @@ int howManyBits(int x) {
  *   Rating: 4
  */
 unsigned floatScale2(unsigned uf) {
-  return 2;
+  unsigned s = uf >> 31 & 1;
+  unsigned exp = uf >> 23 & 0xFF;
+  unsigned frac = uf & 0x7FFFFF;
+
+  // NaN and inifity
+  if (exp == 0xFF)
+    return uf;
+  
+  // 0
+  if (exp == 0 && frac == 0) 
+    return uf;
+
+  if (exp == 0) {
+    frac <<= 1;
+    return (s << 31) | frac;
+  } else {
+    exp += 1;
+    return (s << 31) | (exp << 23) | frac;
+  }
 }
 /* 
  * floatFloat2Int - Return bit-level equivalent of expression (int) f
@@ -278,7 +330,39 @@ unsigned floatScale2(unsigned uf) {
  *   Rating: 4
  */
 int floatFloat2Int(unsigned uf) {
-  return 2;
+  unsigned s = uf >> 31 & 1;
+  unsigned exp = uf >> 23 & 0xFF;
+  unsigned frac = uf & 0x7FFFFF;
+  int E = exp - 127;
+
+  // NaN and inifity
+  if (exp == 0xFF) 
+    return 1 << 31;
+
+  if (exp == 0 && exp == 0) 
+    return 0;
+  
+  // denormalize
+  if (exp == 0) 
+    return 0;
+
+  // normalize
+  if (E >= 32) 
+    return 1 << 31;
+  else if (E < 0) 
+    return 0;
+
+  // 加上隐含的1
+  frac = (1 << 23) | frac;
+  if (E >= 23) 
+    frac <<= (E - 23);
+  else 
+    frac >>= (23 - E); 
+
+  if (s) 
+    return -frac;
+  
+  return frac;
 }
 /* 
  * floatPower2 - Return bit-level equivalent of the expression 2.0^x
@@ -294,5 +378,10 @@ int floatFloat2Int(unsigned uf) {
  *   Rating: 4
  */
 unsigned floatPower2(int x) {
-    return 2;
+  int exp = x + 127;
+  if (exp <= 0) 
+    return 0;
+  if (exp >= 0xFF)
+    return 0xFF << 23;
+  return exp << 23;
 }
